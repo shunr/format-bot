@@ -1,14 +1,17 @@
 import hashlib
 import os
+import time
 from shutil import rmtree
 
 import git
 from github import Github
 
+from .flavor_text import FlavorText
 from .python import format_python
 
 TMP_DIR = "/tmp"
 BRANCH_SUFFIX = "-auto-formatted"
+RETRY_DELAY_MS = 400
 
 
 class GithubFormatter:
@@ -25,7 +28,17 @@ class GithubFormatter:
 
         repo_hash = hashlib.sha224(repo_name.encode("utf-8")).hexdigest() + "_" + branch
         repo_dir = os.path.join(TMP_DIR, repo_hash)
-        repo = git.Repo.clone_from(fork.clone_url, repo_dir, branch=branch)
+
+        cloned = False
+        while not cloned:
+            try:
+                repo = git.Repo.clone_from(fork.clone_url, repo_dir, branch=branch)
+                cloned = True
+            except git.exc.GitCommandError as e:
+                # Fork not finished
+                if e.status != 128:
+                    raise e
+                time.sleep(RETRY_DELAY_MS / 1000)
 
         repo.config_writer().set_value("user", "name", str(self.user.name)).release()
         repo.config_writer().set_value("user", "email", str(self.user.email)).release()
@@ -40,7 +53,7 @@ class GithubFormatter:
         format_python(repo_dir)
 
         repo.git.add(A=True)
-        repo.index.commit("Formatted files")
+        repo.index.commit(FlavorText.COMMIT_MESSAGE)
         repo.git.remote("rm", "origin")
         repo.git.remote(
             "add",
@@ -65,8 +78,11 @@ class GithubFormatter:
             )
         else:
             original_repo.create_pull(
-                title="Format your code!", body="ABCD", base=branch, head=pr_head
+                title=FlavorText.PR_TITLE,
+                body=FlavorText.PR_BODY,
+                base=branch,
+                head=pr_head,
             )
 
-        print("Done!")
         rmtree(repo_dir)
+        print("Done!")
